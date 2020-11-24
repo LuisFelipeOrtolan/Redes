@@ -46,7 +46,7 @@ s2.sendall(b'JOIN %s\r\n' % ch1)
 assert recvline(s1) == b':%s JOIN :%s\r\n' % (nick2, ch1)
 assert recvline(s2) == b':%s JOIN :%s\r\n' % (nick2, ch1)
 assert recvline(s2).strip() == b':server 353 %s = %s :%s' % (nick2, ch1, b' '.join(sorted([nick1, nick2])))
-'''
+
 assert recvline(s2) == b':server 366 %s %s :End of /NAMES list.\r\n' % (nick2, ch1)
 
 # Quando o cliente3 entrar, os nomes do cliente1 e do cliente2 também têm que estar na lista
@@ -59,7 +59,7 @@ assert recvline(s3) == b':server 366 %s %s :End of /NAMES list.\r\n' % (nick3, c
 
 r,_,_=select.select([s1,s2,s3],[],[],0.1)
 assert r == []  # não deve receber nada além do que foi verificado até o momento
-'''
+
 s1.shutdown(socket.SHUT_WR)
 s2.shutdown(socket.SHUT_WR)
 s3.shutdown(socket.SHUT_WR)

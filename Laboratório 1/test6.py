@@ -65,7 +65,7 @@ assert recvcmd(s3, b'PRIVMSG') == b':%s PRIVMSG %s :%s\r\n' % (nick1, ch1, msg1)
 
 msg2 = base64.b64encode(os.urandom(32))
 s2.sendall(b'PRIVMSG %s :%s\r\n' % (ch2, msg2))
-print (recvcmd(s1, b'PRIVMSG') , b':%s PRIVMSG %s :%s\r\n' % (nick2, ch2, msg2))
+assert recvcmd(s1, b'PRIVMSG') == b':%s PRIVMSG %s :%s\r\n' % (nick2, ch2, msg2)
 
 msg3 = base64.b64encode(os.urandom(32))
 s3.sendall(b'PRIVMSG %s :%s\r\n' % (ch1.upper(), msg3))
