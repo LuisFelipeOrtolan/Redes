@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+import asyncio
+from tcp import Servidor
+import re
+
+aux = b''
+
+lista_usuarios = []
+lista_apelidos = []
+
+canais = []
+membros_canais = []
+
+def validar_nome(nome):
+    return re.match(br'^[a-zA-Z][a-zA-Z0-9_-]*$', nome) is not None
+
+def lista_item(item, lista):
+    i = 0
+    for objeto in lista:
+        if (objeto.upper() == item.upper()):
+            return i
+        i = i + 1
+    return -1
+
+def sair(conexao):
+    global lista_usuarios, lista_apelidos, canais, membros_canais
+
+    apelido = lista_apelidos[lista_usuarios.index(conexao)]
+    
+    for membro in membros_canais:
+        if conexao in membro:
+            for computador in membro:
+                computador.enviar(b':' + apelido + b' QUIT : Connection closed\r\n')
+            membro.remove(conexao)
+
+
+    lista_apelidos.pop(lista_usuarios.index(conexao))
+    lista_usuarios.remove(conexao)
+    conexao.fechar()
+
+def nick(conexao, item):
+    global lista_usuarios, lista_apelidos
+
+    apelido = item.split(b' ')[1].split(b'\r\n')[0]
+    apelido_atual = lista_apelidos[lista_usuarios.index(conexao)]
+    if (lista_item(apelido, lista_apelidos) >= 0):
+        conexao.enviar(b':server 433 ' + apelido_atual + b' ' + apelido + b' :Nickname is already in use\r\n')
+    else:
+        if(validar_nome(apelido) == True):
+            if lista_apelidos[lista_usuarios.index(conexao)] == b'*':
+                conexao.enviar(b':server 001 ' + apelido + b' :Welcome\r\n' + b':server 422 ' + apelido + b' :MOTD File is missing\r\n')
+                lista_apelidos[lista_usuarios.index(conexao)] = apelido
+            else:
+                lista_apelidos[lista_usuarios.index(conexao)] = apelido
+                conexao.enviar(b':' + apelido_atual + b' NICK ' + apelido + b'\r\n')
+        else:
+            conexao.enviar(b':server 432 ' + apelido_atual + b' ' + apelido + b' :Erroneous nickname\r\n')
+
+def privmsg(conexao, item):
+    global lista_usuarios, lista_apelidos, canais, membros_canais
+
+    destinatario = item.split(b' ')[1]
+    message = item.split(b':')[1]
+
+    if destinatario.startswith(b'#'):
+        for membro in membros_canais[lista_item(destinatario, canais)]:
+            if (membro != conexao):
+                membro.enviar(b':' + lista_apelidos[lista_usuarios.index(conexao)] + b' PRIVMSG ' + destinatario + b' :' + message)
+
+    else:
+        if (lista_item(destinatario, lista_apelidos) >= 0):
+            dest_conexao = lista_usuarios[lista_item(destinatario, lista_apelidos)]
+            dest_conexao.enviar(b':' + lista_apelidos[lista_usuarios.index(conexao)] + b' PRIVMSG ' + destinatario + b' :' + message)
+
+def listar_membros(canal, conexao):
+    global canais, membros_canais, lista_apelidos, lista_usuarios
+
+    indice = lista_item(canal, canais)
+    apelido = lista_apelidos[lista_usuarios.index(conexao)]
+    copia_membros = []
+
+    for pessoa in membros_canais[indice]:
+        copia_membros.append(lista_apelidos[lista_usuarios.index(pessoa)])
+
+    copia_membros.sort()
+
+    linha_nova = 1
+
+    for membro in copia_membros:
+
+        if linha_nova == 1:
+            linha = b':server 353 ' + apelido + b' = ' + canal + b' :'
+            if (len(linha) + len(membro) + 2 <= 512):
+                linha = linha + membro
+            linha_nova = 0
+        else:
+            if (len(linha) + len(membro) + 3 <= 512):
+                linha = linha + b' ' + membro
+            else:
+                linha = linha + b'\r\n'
+                conexao.enviar(linha)
+                linha_nova = 1
+
+    conexao.enviar(linha + b'\r\n')
+    conexao.enviar(b':server 366 ' + apelido + b' ' + canal + b' :End of /NAMES list.\r\n')
+
+def join(conexao, item):
+    global membros_canais, canais, lista_apelidos, lista_usuarios
+
+    canal = item.split(b' ')[1].split(b'\r\n')[0]
+    if canal.startswith(b'#'):
+        if (lista_item(canal, canais) < 0):
+            canais.append(canal)
+            membros_canais.append([])
+
+        membros_canais[lista_item(canal, canais)].append(conexao)
+        for membro in membros_canais[lista_item(canal, canais)]:
+            membro.enviar(b':' + lista_apelidos[lista_usuarios.index(conexao)] + b' JOIN :' + canal + b'\r\n')
+
+    listar_membros(canal, conexao)
+
+
+def part(conexao, item):
+    global membros_canais, canais, lista_apelidos, lista_usuarios
+
+    canal = item.split(b' ')[1].split(b'\r\n')[0]
+    if canal.startswith(b'#'):
+        if (lista_item(canal, canais) >= 0):
+            for membro in membros_canais[lista_item(canal, canais)]:
+                membro.enviar(b':' + lista_apelidos[lista_usuarios.index(conexao)] + b' PART ' + canal + b'\r\n')
+            membros_canais[lista_item(canal, canais)].remove(conexao)
+
+def dados_recebidos(conexao, dados):
+
+    if dados == b'':
+        return sair(conexao)
+
+    global aux, lista_usuarios, lista_apelidos
+
+    comandos = dados.splitlines(True)
+    for item in comandos:
+        if item == b'':
+            break
+
+        elif item.startswith(b'PING') & item.endswith(b'\r\n'):
+            conexao.enviar(b':server PONG server :' + item.split(b' ',1)[1])
+
+        elif item.startswith(b'NICK') & item.endswith(b'\r\n'):
+            nick(conexao,item)
+
+        elif item.startswith(b'PRIVMSG') & item.endswith(b'\r\n'):
+            privmsg(conexao, item)
+
+        elif item.startswith(b'JOIN') & item.endswith(b'\r\n'):
+            join(conexao, item)
+
+        elif item.startswith(b'PART') & item.endswith(b'\r\n'):
+            part(conexao, item)
+
+        else:
+            aux = aux + item
+            if aux.startswith(b'PING') & aux.endswith(b'\r\n'):
+                conexao.enviar(b':server PONG server :' + aux.split(b' ',1)[1])
+                aux = b''
+            if aux.startswith(b'NICK') & aux.endswith(b'\r\n'):
+                nick(conexao, aux)
+                aux = b''
+            if aux.startswith(b'PRIVMSG') & aux.endswith(b'\r\n'):
+                privmsg(conexao, aux)
+                aux = b''
+            if aux.startswith(b'JOIN') & aux.endswith(b'\r\n'):
+                join(conexao, aux)
+                aux = b''
+
+    print(conexao, dados)
+
+
+def conexao_aceita(conexao):
+    print(conexao, 'nova conexão')
+    lista_usuarios.append(conexao)
+    lista_apelidos.append(b'*')
+    conexao.registrar_recebedor(dados_recebidos)
+
+
+servidor = Servidor(6667)
+servidor.registrar_monitor_de_conexoes_aceitas(conexao_aceita)
+asyncio.get_event_loop().run_forever() 
