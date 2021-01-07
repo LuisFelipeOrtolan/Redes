@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+import asyncio
+from tcp import Servidor
+import re
+
+aux = b'' #Variável para receber comandos em etapas.
+
+#Variáveis para gerenciar usuários ativos no sistema e seus apelidos.
+lista_usuarios = []
+lista_apelidos = []
+
+#Variáveis para gerenciar os canais criados no servidor e seus membros
+canais = []
+membros_canais = []
+
+#   Função que valida se um nome atende aos critérios do sistema.
+#   Input: Uma string em bytes com o nome a ser validado.
+#   Output: True se o nome é válido e False caso contrário.
+
+def validar_nome(nome):
+    return re.match(br'^[a-zA-Z][a-zA-Z0-9_-]*$', nome) is not None
+
+#   Função que confere se um item está em uma lista, desconsiderando letras maiúsculas ou minúsculas
+#   Input: O item a ser encontrado na lista e a lista.
+#   Output: -1 se o item não está na lista ou um inteiro com o índice de onde aquele item se encontra na lista.
+def lista_item(item, lista):
+    i = 0
+    for objeto in lista:
+        if (objeto.upper() == item.upper()):
+            return i
+        i = i + 1
+    return -1
+
+#   Função que remove uma conexão do sistema.
+#   Input: Os dados da conexão.
+#   Output: A conexão é desligada, e seus vestígios removidos do sistema.
+def sair(conexao):
+    global lista_usuarios, lista_apelidos, canais, membros_canais
+
+    apelido = lista_apelidos[lista_usuarios.index(conexao)] # Obtém o apelido usado pelo dono da conexão.
+    
+    # Remoção do usuários nos canais em que ele está.
+    for membro in membros_canais: 
+        if conexao in membro: # Em todo canal e
+            for computador in membro: # Para cada membro do canal,
+                computador.enviar(b':' + apelido + b' QUIT : Connection closed\r\n') # Avise que o usuário saiu.
+            membro.remove(conexao) # Remova o usuário da lista de participantes do canal.
+
+
+    lista_apelidos.pop(lista_usuarios.index(conexao)) # Marca o apelido usado como disponível.
+    lista_usuarios.remove(conexao) # Remove a conexão da lista de usuários.
+    conexao.fechar()
+
+#   Função que lida com o comando NICK do sistema.
+#   Input: Os dados de conexão do usuário e o comando.
+#   Output: O comando NICK tratado e suas consequências enviadas.
+def nick(conexao, comando):
+    global lista_usuarios, lista_apelidos
+
+    apelido = comando.split(b' ')[1].split(b'\r\n')[0] # Obtém o apelido desejado pelo usuário via comando.
+    apelido_atual = lista_apelidos[lista_usuarios.index(conexao)] # Obtém o apelido atual do usuário.
+    if (lista_item(apelido, lista_apelidos) >= 0): # Se o apelido já está em uso, avise o usuário.
+        conexao.enviar(b':server 433 ' + apelido_atual + b' ' + apelido + b' :Nickname is already in use\r\n')
+    else:
+        if(validar_nome(apelido) == True): # Se o nome está disponível, verifique se é válido.
+            if lista_apelidos[lista_usuarios.index(conexao)] == b'*': # Se o usuário ainda não tiver um apelido cadastrado
+                conexao.enviar(b':server 001 ' + apelido + b' :Welcome\r\n' + b':server 422 ' 
+                    + apelido + b' :MOTD File is missing\r\n') # Dê boas vindas ao usuário.
+                lista_apelidos[lista_usuarios.index(conexao)] = apelido # Cadastre o apelido dele no sistema.
+            else: # Caso seja apenas uma troca de apelidos,
+                lista_apelidos[lista_usuarios.index(conexao)] = apelido # Registra a troca no sistema
+                conexao.enviar(b':' + apelido_atual + b' NICK ' + apelido + b'\r\n') # Comunique que a troca foi efetuada.
+        else: # Caso o nome não seja válido, avise ao usuário.
+            conexao.enviar(b':server 432 ' + apelido_atual + b' ' + apelido + b' :Erroneous nickname\r\n')
+
+#   Função que lida com o comando PRIVMSG do sistema.
+#   Input: Os dados de conexão do usuário e o comando.
+#   Output: O comando PRIVMSG tratado e suas consequências enviadas.
+def privmsg(conexao, comando):
+    global lista_usuarios, lista_apelidos, canais, membros_canais
+
+    destinatario = comando.split(b' ')[1] # Obtenha o destinatário da mensagem privada.
+    message = comando.split(b':')[1].split(b'\r\n')[0] # Obtenha a mensagem 
+
+    if destinatario.startswith(b'#'): # Caso a mensagem seja para um canal,
+        for membro in membros_canais[lista_item(destinatario, canais)]: # Para cada membro daquele canal,
+            if (membro != conexao): # Com exeção de quem está enviando, mande a mensagem.
+                membro.enviar(b':' + lista_apelidos[lista_usuarios.index(conexao)] + b' PRIVMSG ' 
+                    + destinatario + b' :' + message + b'\r\n')
+
+    else: # Caso a mensagem seja para outro usuário
+        if (lista_item(destinatario, lista_apelidos) >= 0): # Verifica se o usuário existe,
+            dest_conexao = lista_usuarios[lista_item(destinatario, lista_apelidos)] # Obtém os dados de conexão
+            dest_conexao.enviar(b':' + lista_apelidos[lista_usuarios.index(conexao)] + b' PRIVMSG ' 
+                + destinatario + b' :' + message + b'\r\n') # Manda a mensagem
+
+#   Função que lista os membros de um canal.
+#   Input: O nome de um canal e dados de conexão de quem está fazendo a requisição.
+#   Output: Os usuários do canal listados pelos apelidos.
+def listar_membros(canal, conexao):
+    global canais, membros_canais, lista_apelidos, lista_usuarios
+
+    indice = lista_item(canal, canais) # Obtém o índice do canal a ser verificado
+    apelido = lista_apelidos[lista_usuarios.index(conexao)] # Obtém o apelido de quem está fazendo a requisição
+    apelidos_membros = []
+
+    for pessoa in membros_canais[indice]: # Copia os apelidos através das conexões para um vetor auxiliar
+        apelidos_membros.append(lista_apelidos[lista_usuarios.index(pessoa)])
+
+    apelidos_membros.sort() # Ordena os apelidos em ordem alfabética.
+
+    linha_nova = 1
+
+    # Lista os nomes em ordem alfabética em linhas de tamanho no máximo 512. 
+    for membro in apelidos_membros:
+        if linha_nova == 1: # Se é uma linha nova,
+            linha = b':server 353 ' + apelido + b' = ' + canal + b' :' # Escreve o começo da linha.
+            if (len(linha) + len(membro) + 2 <= 512): # Se cabe o primeiro membro da lista mais '\r\n'
+                linha = linha + membro # Adiciona esse membro na linha a ser escrita.
+            linha_nova = 0 # E continue adicionando mais nomes.
+        else: # Se já existe uma linha sendo escrita,
+            if (len(linha) + len(membro) + 3 <= 512): # Verifique se cabe mais um membro mais um espaço e '\r\n'
+                linha = linha + b' ' + membro # Nesse caso, adicione o novo membro.
+            else: # Se não couber,
+                linha = linha + b'\r\n' # Escreva o final de linha.
+                conexao.enviar(linha) # Imprima a linha escrita.
+                linha_nova = 1 # Marque que se deve começar a escrever uma nova linha.
+
+    conexao.enviar(linha + b'\r\n') # Quando acabarem os membros, escreva o que sobrou.
+    conexao.enviar(b':server 366 ' + apelido + b' ' + canal + b' :End of /NAMES list.\r\n') # Registre que acabaram os membros.
+
+#   Função que lida com o comando JOIN do sistema.
+#   Input: Os dados de conexão do usuário e o comando.
+#   Output: O comando JOIN tratado e suas consequências enviadas.
+def join(conexao, comando):
+    global membros_canais, canais, lista_apelidos, lista_usuarios
+
+    canal = comando.split(b' ')[1].split(b'\r\n')[0] # Obtém o nome do canal a entrar.
+    if canal.startswith(b'#'): # Verifica se é mesmo um canal.
+        if (lista_item(canal, canais) < 0): # Se o canal ainda não existe,
+            canais.append(canal) # Cria-se o canal e
+            membros_canais.append([]) # Cria-se o vetor de quem está naquele canal.
+
+        membros_canais[lista_item(canal, canais)].append(conexao) # Registra que o usuário entrou no canal.
+        for membro in membros_canais[lista_item(canal, canais)]: # Avise todos os membros do canal que alguém entrou.
+            membro.enviar(b':' + lista_apelidos[lista_usuarios.index(conexao)] + b' JOIN :' + canal + b'\r\n')
+
+    listar_membros(canal, conexao) # Mostre todos os usuarios daquele canal para o novo membro.
+
+#   Função que lida com o comando PART do sistema.
+#   Input: Os dados de conexão do usuário e o comando.
+#   Output: O comando PART tratado e suas consequências enviadas.
+def part(conexao, comando):
+    global membros_canais, canais, lista_apelidos, lista_usuarios
+
+    canal = comando.split(b' ')[1].split(b'\r\n')[0] # Obtém o nome do comando a sair.
+    if canal.startswith(b'#'): # Verifica se é um canal.
+        if (lista_item(canal, canais) >= 0): # Verifica que o canal existe.
+            for membro in membros_canais[lista_item(canal, canais)]: # Avise a todos os membros que alguém saiu.
+                membro.enviar(b':' + lista_apelidos[lista_usuarios.index(conexao)] + b' PART ' + canal + b'\r\n')
+            membros_canais[lista_item(canal, canais)].remove(conexao) # Remova o usuário do canal.
+
+def dados_recebidos(conexao, dados):
+
+    if dados == b'':
+        return sair(conexao)
+
+    global aux, lista_usuarios, lista_apelidos
+
+    comandos = dados.splitlines(True) # Separa os comandos
+    
+    for item in comandos:
+        # Decide qual o comando foi invocado.
+        if item == b'':
+            break
+
+        elif item.startswith(b'PING') & item.endswith(b'\r\n'):
+            conexao.enviar(b':server PONG server :' + item.split(b' ',1)[1])
+
+        elif item.startswith(b'NICK') & item.endswith(b'\r\n'):
+            nick(conexao,item)
+
+        elif item.startswith(b'PRIVMSG') & item.endswith(b'\r\n'):
+            privmsg(conexao, item)
+
+        elif item.startswith(b'JOIN') & item.endswith(b'\r\n'):
+            join(conexao, item)
+
+        elif item.startswith(b'PART') & item.endswith(b'\r\n'):
+            part(conexao, item)
+
+        else: # Se o comando não foi recebido de uma vez,
+            aux = aux + item # Adicione os pedaços até que o comando esteja pronto e
+            # Decida qual o comando.
+            if aux.startswith(b'PING') & aux.endswith(b'\r\n'):
+                conexao.enviar(b':server PONG server :' + aux.split(b' ',1)[1])
+                aux = b''
+            if aux.startswith(b'NICK') & aux.endswith(b'\r\n'):
+                nick(conexao, aux)
+                aux = b''
+            if aux.startswith(b'PRIVMSG') & aux.endswith(b'\r\n'):
+                privmsg(conexao, aux)
+                aux = b''
+            if aux.startswith(b'JOIN') & aux.endswith(b'\r\n'):
+                join(conexao, aux)
+                aux = b''
+
+    print(conexao, dados)
+
+
+def conexao_aceita(conexao):
+    print(conexao, 'nova conexão')
+    lista_usuarios.append(conexao)
+    lista_apelidos.append(b'*')
+    conexao.registrar_recebedor(dados_recebidos)
+
+
+servidor = Servidor(6667)
+servidor.registrar_monitor_de_conexoes_aceitas(conexao_aceita)
+asyncio.get_event_loop().run_forever() 
